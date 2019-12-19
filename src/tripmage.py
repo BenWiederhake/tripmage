@@ -160,13 +160,16 @@ def run_options(img, popopts):
     return result
 
 
-def populate_options(options):
-    assert isinstance(options, dict), type(options)
+def populate_options(raw_options):
+    assert isinstance(raw_options, dict), type(raw_options)
 
     # Fill-in the default values:
-    options = dict(OPTIONS_DEFAULT).update(options)
-    # Copy "manually", because the margins-dict is mutable:
-    options['margins'] = dict(options['margins'])
+    options = dict(OPTIONS_DEFAULT)
+    options.update(raw_options)
+    if 'margins' in raw_options:
+        # Copy "manually", because the margins-dict is mutable:
+        options['margins'] = dict(OPTIONS_DEFAULT['margins'])
+        options['margins'].update(raw_options['margins'])
 
     # Expand all shortnames:
     registries = {
@@ -176,15 +179,15 @@ def populate_options(options):
         'distortion_1': REGISTRY_DISTORTION,
         'distortion_2': REGISTRY_DISTORTION,
         'distortion_3': REGISTRY_DISTORTION,
-        'alpha': REGISTRY_ALPHA,
     }
-    for key, registry in registries:
+    for key, registry in registries.items():
         if isinstance(options[key], str):
             base = registry[options[key]].copy()
             options[key] = base
         elif isinstance(options[key], dict):
             base = registry[options[key]['type']].copy()
-            options[key] = base.update(options[key])
+            base.update(options[key])
+            options[key] = base
         else:
             raise AssertionError('value for option {} has unexpected type {} (expected str or dict)'.format(key, type(options[key])))
 
