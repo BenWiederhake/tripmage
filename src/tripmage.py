@@ -30,26 +30,26 @@ OPTIONS_DEFAULT = {
 REGISTRY_BORDER = dict()
 # Registrees must define:
 # * 'type': str, for easier debugging
-# * 'fn': function (x: float, y: float, w: int, h: int) -> (x: float, y: float), for the actual mapping
+# * 'fn': function (x: float, y: float, w: int, h: int, ctx) -> (x: float, y: float), for the actual mapping
 REGISTRY_INTERPOLATION = dict()
 # Registrees must define:
 # * 'type': str, for easier debugging
-# * 'fn': function (col_ul, col_ur, col_bl, col_br, x_frac: float, y_frac: float) -> col, for the actual mapping
+# * 'fn': function (col_ul, col_ur, col_bl, col_br, x_frac: float, y_frac: float, ctx) -> col, for the actual mapping
 #   (where `col` is a `Color` instance, and `x_frac` and `y_frac` are < 1.)
 REGISTRY_COLORSPACE = dict()
 # Registrees must define:
 # * 'type': str, for easier debugging
-# * 'rgb_to_col': function (r: int, g: int, b: int) -> col, for the "forwards" mapping
-# * 'col_to_rgb': function (col) -> (r: int, g: int, b: int), for the "backwards" mapping
+# * 'rgb_to_col': function (r: int, g: int, b: int, ctx) -> col, for the "forwards" mapping
+# * 'col_to_rgb': function (col) -> (r: int, g: int, b: int, ctx), for the "backwards" mapping
 REGISTRY_COMPONENTS = dict()
 # Registrees must define:
 # * 'type': str, for easier debugging
-# * 'fn': function (x: int, y: int) -> (col, col, col), for the actual mapping
+# * 'fn': function (x: int, y: int, w: int, h: int, ctx) -> (col, col, col), for the actual mapping
 #   the returned colors must be unit-length and orthogonal.
 REGISTRY_DISTORTION = dict()
 # Registrees must define:
 # * 'type': str, for easier debugging
-# * 'fn': function (x: int, y: int) -> (float, float), for the actual mapping
+# * 'fn': function (x: int, y: int, w: int, h: int, ctx) -> (float, float), for the actual mapping
 
 
 # Basically a `Vector3D`.
@@ -62,11 +62,20 @@ class Color:
     def zero():
         return Color([0.0, 0.0, 0.0])
 
+    @staticmethod
+    def make_random_unit(rng):
+        while True:
+            col = Color([rng.gauss(0, 1) for _ in range(3)])
+            length = col.vec_length()
+            if length > 1e-2:
+                return col.scale(1 / length)
+
+
     def copy(self):
         return Color(list(self.abc))  # Just to make sure
 
     def vec_length(self):
-        return sqrt(sum(x ** 2 for x in self.abc))
+        return math.sqrt(sum(x ** 2 for x in self.abc))
 
     def clip_length(self, max_length):
         actual_length = self.vec_length()
@@ -81,15 +90,140 @@ class Color:
     def __add__(self, rhs):
         return Color([(x + y) for x, y in zip(self.abc, rhs.abc)])
 
-    def __mul__(self, rhs):
+    def pointwise_prod(self, rhs):
         return Color([(x * y) for x, y in zip(self.abc, rhs.abc)])
 
     def scalar_prod(self, rhs):
-        return sum(self * rhs)
+        return sum(self.pointwise_prod(rhs).abc)
+
+    def cross_prod(self, rhs):
+        a1, b1, c1 = self.abc
+        a2, b2, c2 = rhs.abc
+        return Color((b1 * c2 - c1 * b2, c1 * a2 - a1 * c2, a1 * b2 - b1 * a2))
+
+    def __repr__(self):
+        return '<Color {} at 0x{:016x}>'.format(self.abc, id(self))
+
+
+
+def _register(registry, key, **kwargs):
+    kwargs['type'] = key
+    registry[key] = kwargs
+
+
+def border_snap(x, y, w, h, ctx):
+    x = min(max(0, x), w)
+    y = min(max(0, y), h)
+    return (x, y)
+
+
+_register(REGISTRY_BORDER, 'snap', fn=border_snap)
+
+
+def interpolate_nearest_neighbor(col_ul, col_ur, col_bl, col_br, x_frac, y_frac, ctx):
+    assert 0 <= x_frac <= 1
+    assert 0 <= y_frac <= 1
+    return [[col_ul, col_ur], [col_bl, col_br]][y_frac < 0.5][x_frac < 0.5]
+
+
+_register(REGISTRY_INTERPOLATION, 'nearest_neighbor', fn=interpolate_nearest_neighbor)
+
+
+def color_projgamma_rgb2col(r, g, b, ctx):
+    # First, scale down to the intervals [0.0, 1.0] and apply gamma-correction.
+    # Then, rescale to the intervals [-1.0, +1.0].
+    col = Color([(c / 255) ** ctx['gamma'] * 2 - 1 for c in [r, g, b]])
+    # Next, find something that lies on the outside.
+    max_component = max(abs(c) for c in col.abc)
+    # Finally, reshape the cube into a sphere, by rescaling along each line individually:
+    if max_component < 1e-4:
+        # Eh, close enough, won't matter anyway.
+        return col
+    # Project `col` onto nearest cube face:
+    #     col.scale(1 / max_component)
+    # The length of that vector:
+    #     col.vec_length() / max_component
+    # Scaling *down* by that factor:
+    return col.scale(max_component / col.vec_length())
+
+
+def color_projgamma_col2rgb(col, ctx):
+    # First,m undo the projection (see above):
+    max_component = max(abs(c) for c in col.abc)
+    if max_component >= 1e-4:
+        col = col.scale(col.vec_length() / max_component)
+    # Then go back to the intervals [0.0, 1.0], undo gamma-correction, and scale up to [0, 255].
+    rgb = [(c / 2 + 0.5) ** (1 / ctx['gamma']) * 255 for c in col.abc]
+    # Finally, round and clip:
+    return [min(max(0, round(c)), 255) for c in rgb]
+
+
+_register(REGISTRY_COLORSPACE, 'projected_gammacorrected', gamma=2.4,
+          rgb_to_col=color_projgamma_rgb2col,
+          col_to_rgb=color_projgamma_col2rgb)
+
+
+def components_staticrandom(x, y, w, h, ctx):
+    ['ignore', x, y, w, h]
+    if '_cache' not in ctx:
+        rng = random.Random('components_staticrandom|' + ctx['seed'])
+        c1 = Color.make_random_unit(rng)
+        c3_dir = Color.make_random_unit(rng)
+        # Scalar product is |v1| * |v2| * cos(angle).
+        # We know |v1| = |v2| = 1, so we can immediately aregue about the angle.
+        # We eventually want orthogonal vectors, so we can just restart until
+        # we hit an angle of at least 20°, so we can compare against
+        # cos(20°) = `math.cos(2 * math.pi/18)` >= 0.939.
+        # So if it's smaller than 0.939, then the angle is "far" larger than 20°.
+        # (In fact, at least 20.115°.)
+        while c1.scalar_prod(c3_dir) < 0.984:
+            c3_dir = Color.make_random_unit(rng)
+        # The rest is easy:
+        c2 = c1.cross_prod(c3_dir)
+        c2 = c2.scale(1 / c2.vec_length())
+        c3 = c1.cross_prod(c2)
+        c3 = c3.scale(1 / c3.vec_length())
+        ctx['_cache'] = [c1, c2, c3]
+        for c in [c1, c2, c3]:
+            assert -1e-6 < c.vec_length() - 1 < 1e-6, [c1, c3_dir, c2, c3]
+    return tuple(c.copy() for c in ctx['_cache'])
+
+
+_register(REGISTRY_COMPONENTS, 'static_random', fn=components_staticrandom)
+
+
+def distortion_staticrandom(x, y, w, h, ctx):
+    ['ignore', x, y, w, h]
+    if '_cache' not in ctx:
+        rng = random.Random('distortion_staticrandom|' + ctx['seed'])
+        if ctx['scale_type'] == 'rel':
+            magn_x = w * ctx['scale_x']
+            magn_y = h * ctx['scale_y']
+        elif ctx['scale_type'] == 'abs':
+            magn_x = ctx['scale_x']
+            magn_y = ctx['scale_y']
+        else:
+            raise ValueError('Unknown scale_type', ctx['scale_type'])
+        x_offset = rng.uniform(-magn_x, magn_x)
+        y_offset = rng.uniform(-magn_y, magn_y)
+        ctx['_cache'] = [x_offset, y_offset]
+    return list(ctx['_cache'])  # Copy
+
+
+_register(REGISTRY_DISTORTION, 'static_random', fn=distortion_staticrandom,
+          scale_type='rel', scale_x=0.05, scale_y=0.05)
+
+
+def plug_call(options, entry, fn, *args, **kwargs):
+    # It is *probably* possible to default `fn` to `'fn'`, but I really don't
+    # want to fuck around too much with syntax-quirks like that.
+    ctx = options[entry]
+    assert isinstance(ctx, dict), (options, 'THE PROBLEM IS WITH KEY', entry, ctx)
+    return ctx[fn](*args, **kwargs, ctx=ctx)
 
 
 def read_rgb(img, x, y):
-    raw = img.getpixel(x, y)
+    raw = img.getpixel((x, y))
     if len(raw) == 1:
         return raw * 3
     elif len(raw) == 3:
@@ -106,14 +240,14 @@ def compute_rgb(img, x: float, y: float, popopts):
     assert 0 <= y <= img_h - 1
     xs = [math.floor(x), math.ceil(x)]
     ys = [math.floor(y), math.ceil(y)]
-    cols = [read_rgb(img, x_int, y_int) for x in xs for y in ys]
-    return popopts['interpolation']['fn'](*cols, x - xs[0], y - ys[0])
+    cols = [read_rgb(img, x_int, y_int) for x_int in xs for y_int in ys]
+    return plug_call(popopts, 'interpolation', 'fn', *cols, x - xs[0], y - ys[0])
 
 
 def project_col(raw_col, component):
-    assert -1e-6 < component.vec_length() - 1 < 1e-6
-    assert raw_col.vec_length() - 1 < 1e-6
-    return sum((raw_col * component).abc)
+    assert -1e-6 < component.vec_length() - 1 < 1e-6, component
+    assert -1 <= raw_col.vec_length() - 1 < 1e-6, raw_col
+    return component.scale(raw_col.scalar_prod(component))
 
 
 def run_options(img, popopts):
@@ -123,15 +257,15 @@ def run_options(img, popopts):
     for dst_y in range(-popopts['margins']['top'], img_h + popopts['margins']['bottom']):
         for dst_x in range(-popopts['margins']['left'], img_w + popopts['margins']['right']):
             # Determine from where we should read the data:
-            source_locs_raw = [popopts[dist_key]['fn'](dst_x, dst_y) for dist_key in dist_keys]
-            source_locs = [popopts['border']['fn'](src_x, src_y, img_w, img_h) for src_x, src_y in source_locs_raw]
+            source_locs_raw = [plug_call(popopts, dist_key, 'fn', dst_x, dst_y, img_w, img_h) for dist_key in dist_keys]
+            source_locs = [plug_call(popopts, 'border', 'fn', src_x, src_y, img_w, img_h) for src_x, src_y in source_locs_raw]
 
             # Make the data usable:
             source_rgbs = [compute_rgb(img, src_x, src_y, popopts) for src_x, src_y in source_locs]
-            source_cols = [popopts['colorspace']['rgb_to_col'](rgba[:3]) for rgba in source_rgbas]
+            source_cols = [plug_call(popopts, 'colorspace', 'rgb_to_col', *rgb) for rgb in source_rgbs]
 
             # Determine which components to use at this point:
-            component_vecs = popopts['components']['fn'](dst_x, dst_y)
+            component_vecs = plug_call(popopts, 'components', 'fn', dst_x, dst_y, img_w, img_h)
 
             # Project onto the components we're actually interested in:
             component_cols = [project_col(raw_col, component) for raw_col, component in zip(source_cols, component_vecs)]
@@ -146,8 +280,8 @@ def run_options(img, popopts):
             # If you disagree, feel free to open up yet another 'registry'.
 
             # Aaand done:
-            result_rgb = popopts['colorspace']['col_to_rgb'](result_col)
-            data.append(result_rgb)
+            result_rgb = plug_call(popopts, 'colorspace', 'col_to_rgb', result_col)
+            data.append(tuple(result_rgb))
 
     result = PIL.Image.new(
         'RGB',
@@ -174,6 +308,7 @@ def populate_options(raw_options):
     # Expand all shortnames:
     registries = {
         'border': REGISTRY_BORDER,
+        'interpolation': REGISTRY_INTERPOLATION,
         'colorspace': REGISTRY_COLORSPACE,
         'components': REGISTRY_COMPONENTS,
         'distortion_1': REGISTRY_DISTORTION,
