@@ -9,7 +9,7 @@ import random
 import sys
 
 OPTIONS_DEFAULT = {
-    'seed': 'asdf',
+    'seed': str(random.getrandbits(32)),
     'margins': {  # ← needs special handling as it is mutable
         'top': 0,
         'bottom': 0,
@@ -347,7 +347,6 @@ def populate_options(raw_options):
 
 
 def run_arguments(options, force, verbose, file_in, file_out):
-    print('Got options {}'.format(options))
     options = json.loads(options)
     populated_options = populate_options(options)
 
