@@ -8,9 +8,9 @@ class TestStringMethods(unittest.TestCase):
     def test_border_snap(self):
         for xywhab in [
                 (-5, -5, 10, 10, 0, 0),
-                (15, 15, 10, 10, 10, 10),
-                (15, 15, 20, 10, 15, 10),
-                (30, 30, 20, 40, 20, 30),
+                (15, 15, 10, 10, 9, 9),
+                (15, 15, 20, 10, 15, 9),
+                (30, 30, 20, 40, 19, 30),
                 (4, 2, 8, 7, 4, 2),
                 ]:
             with self.subTest(xywhab=xywhab):

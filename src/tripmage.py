@@ -50,6 +50,7 @@ REGISTRY_DISTORTION = dict()
 # Registrees must define:
 # * 'type': str, for easier debugging
 # * 'fn': function (x: int, y: int, w: int, h: int, ctx) -> (float, float), for the actual mapping
+#   Must return *relative* coordinates.  So the identity transform would be implememented by `return (0.0, 0.0)`
 
 
 # Basically a `Vector3D`.
@@ -112,8 +113,8 @@ def _register(registry, key, **kwargs):
 
 
 def border_snap(x, y, w, h, ctx):
-    x = min(max(0, x), w)
-    y = min(max(0, y), h)
+    x = min(max(0, x), w - 1)
+    y = min(max(0, y), h - 1)
     return (x, y)
 
 
@@ -153,9 +154,15 @@ def color_projgamma_col2rgb(col, ctx):
     if max_component >= 1e-4:
         col = col.scale(col.vec_length() / max_component)
     # Then go back to the intervals [0.0, 1.0], undo gamma-correction, and scale up to [0, 255].
-    rgb = [(c / 2 + 0.5) ** (1 / ctx['gamma']) * 255 for c in col.abc]
+    unitcube_rgb = [c / 2 + 0.5 for c in col.abc]
+    assert all(-1e-6 < c < 1 + 1e-6 for c in unitcube_rgb), (col, unitcube_rgb)
+    rgb = [min(max(0.0, c), 1.0) ** (1 / ctx['gamma']) * 255 for c in unitcube_rgb]
     # Finally, round and clip:
-    return [min(max(0, round(c)), 255) for c in rgb]
+    try:
+        return [min(max(0, round(c)), 255) for c in rgb]
+    except BaseException as e:
+        print(col.abc, rgb, [type(c) for c in rgb])
+        raise e
 
 
 _register(REGISTRY_COLORSPACE, 'projected_gammacorrected', gamma=2.4,
@@ -236,10 +243,10 @@ def read_rgb(img, x, y):
 
 def compute_rgb(img, x: float, y: float, popopts):
     img_w, img_h = img.size
-    assert 0 <= x <= img_w - 1
-    assert 0 <= y <= img_h - 1
-    xs = [math.floor(x), math.ceil(x)]
-    ys = [math.floor(y), math.ceil(y)]
+    assert 0 <= x < img_w
+    assert 0 <= y < img_h
+    xs = [math.floor(x), min(img_w - 1, math.ceil(x))]
+    ys = [math.floor(y), min(img_h - 1, math.ceil(y))]
     cols = [read_rgb(img, x_int, y_int) for x_int in xs for y_int in ys]
     return plug_call(popopts, 'interpolation', 'fn', *cols, x - xs[0], y - ys[0])
 
@@ -257,8 +264,8 @@ def run_options(img, popopts):
     for dst_y in range(-popopts['margins']['top'], img_h + popopts['margins']['bottom']):
         for dst_x in range(-popopts['margins']['left'], img_w + popopts['margins']['right']):
             # Determine from where we should read the data:
-            source_locs_raw = [plug_call(popopts, dist_key, 'fn', dst_x, dst_y, img_w, img_h) for dist_key in dist_keys]
-            source_locs = [plug_call(popopts, 'border', 'fn', src_x, src_y, img_w, img_h) for src_x, src_y in source_locs_raw]
+            dist_vecs = [plug_call(popopts, dist_key, 'fn', dst_x, dst_y, img_w, img_h) for dist_key in dist_keys]
+            source_locs = [plug_call(popopts, 'border', 'fn', dst_x - dist_x, dst_y - dist_y, img_w, img_h) for dist_x, dist_y in dist_vecs]
 
             # Make the data usable:
             source_rgbs = [compute_rgb(img, src_x, src_y, popopts) for src_x, src_y in source_locs]
@@ -333,6 +340,7 @@ def populate_options(raw_options):
 
 
 def run_arguments(options, force, verbose, file_in, file_out):
+    print('Got options {}'.format(options))
     options = json.loads(options)
     populated_options = populate_options(options)
 
@@ -341,7 +349,7 @@ def run_arguments(options, force, verbose, file_in, file_out):
         exit(1)
     img = PIL.Image.open(file_in)
 
-    run_options(img, populated_options)
+    result_img = run_options(img, populated_options)
 
     if verbose:
         def reprify(thing):
@@ -353,7 +361,7 @@ def run_arguments(options, force, verbose, file_in, file_out):
                 return repr(thing)
         print(json.dumps(reprify(populated_options), indent=1, sort_keys=True))
 
-    img.save(file_out)
+    result_img.save(file_out)
 
 
 def build_parser(progname):
