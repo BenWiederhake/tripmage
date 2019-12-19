@@ -17,14 +17,12 @@ OPTIONS_DEFAULT = {
         'right': 0,
     },
     'border': 'snap',
-    'interpolation': 'nearest_neighbor',  # TODO: Implement
-    'colorspace': 'projected_gammacorrected',  # TODO: Implement
-    'components': 'static_random',  # TODO: Implement
+    'interpolation': 'nearest_neighbor',
+    'colorspace': 'projected_gammacorrected',
+    'components': 'static_random',
     # I know, a list to store the distortions would me more intuitive.
     # However, this way the defaulting is slightly easier.
-    'distortion_1': 'static_random',  # TODO: Implement
-    'distortion_2': 'static_random',
-    'distortion_3': 'static_random',
+    'distortion': 'static_random',
 }
 
 REGISTRY_BORDER = dict()
@@ -194,6 +192,13 @@ def components_staticrandom(x, y, w, h, ctx):
         for c in [c1, c2, c3]:
             assert -1e-6 < c.vec_length() - 1 < 1e-6, [c1, c3_dir, c2, c3]
     return tuple(c.copy() for c in ctx['_cache'])
+    # You can generate "orth-norm" color palettes like this:
+    # ```
+    # >>> import tripmage
+    # >>> components = tripmage.components_staticrandom(0, 0, 0, 0, dict(seed='asdf'))
+    # >>> ' '.join('#' + ''.join('{:02x}'.format(c) for c in tripmage.color_projgamma_col2rgb(components[i], dict(gamma=1.0))) for i in range(3))
+    # '#005aaf #9ac6ff #44ff46'
+    # ```
 
 
 _register(REGISTRY_COMPONENTS, 'static_random', fn=components_staticrandom)
@@ -323,6 +328,8 @@ def populate_options(raw_options):
         'distortion_3': REGISTRY_DISTORTION,
     }
     for key, registry in registries.items():
+        if key not in options and key.startswith('distortion_'):
+            options[key] = options['distortion']  # No need to copy, thankfully
         if isinstance(options[key], str):
             base = registry[options[key]].copy()
             options[key] = base
