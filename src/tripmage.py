@@ -123,7 +123,7 @@ _register(REGISTRY_BORDER, 'snap', fn=border_snap)
 def interpolate_nearest_neighbor(col_ul, col_ur, col_bl, col_br, x_frac, y_frac, ctx):
     assert 0 <= x_frac <= 1
     assert 0 <= y_frac <= 1
-    return [[col_ul, col_ur], [col_bl, col_br]][y_frac < 0.5][x_frac < 0.5]
+    return [[col_ul, col_ur], [col_bl, col_br]][y_frac >= 0.5][x_frac >= 0.5]
 
 
 _register(REGISTRY_INTERPOLATION, 'nearest_neighbor', fn=interpolate_nearest_neighbor)
@@ -335,8 +335,6 @@ def populate_options(raw_options):
 def run_arguments(options, force, verbose, file_in, file_out):
     options = json.loads(options)
     populated_options = populate_options(options)
-    if verbose:
-        print(json.dumps(populate_options, sort_keys=True))
 
     if not force and os.path.exists(file_out):
         print('Output file {} already exists, aborting.  Use "-f" to overwrite.'.format(file_out), file=sys.stderr)
@@ -344,6 +342,16 @@ def run_arguments(options, force, verbose, file_in, file_out):
     img = PIL.Image.open(file_in)
 
     run_options(img, populated_options)
+
+    if verbose:
+        def reprify(thing):
+            if isinstance(thing, (str, int, float)):
+                return thing
+            elif isinstance(thing, dict):
+                return {reprify(k): reprify(v) for k, v in thing.items()}
+            else:
+                return repr(thing)
+        print(json.dumps(reprify(populated_options), indent=1, sort_keys=True))
 
     img.save(file_out)
 
